@@ -14,7 +14,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Find and extract source ZIP
-        id: zip
         shell: bash
         run: |
           set -euo pipefail
@@ -28,34 +27,39 @@ jobs:
           echo "Using ZIP: $ZIP_PATH"
           mkdir -p source
           ditto -x -k "$ZIP_PATH" source
-          echo "Extracted files:"
-          find source -maxdepth 7 -type f | sort | head -300
+          echo "Project definitions found:"
+          find source -name project.yml -type f -print
 
-      - name: Locate XcodeGen project definition
+      - name: Locate project and set working directory
         shell: bash
         run: |
           set -euo pipefail
           candidate="$(find source -name project.yml -type f -print -quit)"
           if [ -z "$candidate" ]; then
-            echo "::error::No project.yml found in the ZIP. This workflow requires an XcodeGen project.yml."
+            echo "::error::No project.yml found anywhere inside the ZIP. This workflow needs an XcodeGen project.yml."
+            echo "Top-level extracted files:"
+            find source -maxdepth 4 -type f | sort | head -250
             exit 1
           fi
-          project_dir="$(dirname "$candidate")"
-          cp "$candidate" project.yml
-          if [ "$project_dir" != "source" ]; then
-            cp -R "$project_dir"/. ./ 
-          fi
+          project_dir="$(cd "$(dirname "$candidate")" && pwd)"
+          echo "Using project directory: $project_dir"
+          echo "SOURCE_DIR=$project_dir" >> "$GITHUB_ENV"
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_DIR"
+          xcodegen generate
 
       - name: Build unsigned app
         shell: bash
         run: |
           set -euo pipefail
+          cd "$SOURCE_DIR"
           PROJECT="$(find . -maxdepth 2 -name '*.xcodeproj' -type d -print -quit)"
           test -n "$PROJECT" || { echo "::error::XcodeGen did not create an .xcodeproj"; exit 1; }
           SCHEME="$(xcodegen list 2>/dev/null | head -1 | xargs || true)"
@@ -65,7 +69,7 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -75,11 +79,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)"
+          APP_PATH="$(find "$GITHUB_WORKSPACE/build/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -type d -print -quit)"
           test -n "$APP_PATH" || { echo "::error::Build completed but no .app bundle was found"; exit 1; }
-          mkdir -p package/Payload
-          cp -R "$APP_PATH" package/Payload/
-          (cd package && zip -qr ../LyricbotVisualizer_unsigned.ipa Payload)
+          mkdir -p "$GITHUB_WORKSPACE/package/Payload"
+          cp -R "$APP_PATH" "$GITHUB_WORKSPACE/package/Payload/"
+          (cd "$GITHUB_WORKSPACE/package" && zip -qr "$GITHUB_WORKSPACE/LyricbotVisualizer_unsigned.ipa" Payload)
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
