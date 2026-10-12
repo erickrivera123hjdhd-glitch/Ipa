@@ -1,4 +1,4 @@
-name: Extract ZIP
+name: Extract ZIP to Repository Root
 
 on:
   workflow_dispatch:
@@ -29,10 +29,11 @@ jobs:
             ZIP_PATH="$ZIP_INPUT"
           else
             ZIP_NAME="$(basename "$ZIP_INPUT")"
-            ZIP_PATH="$(find . -type f -name "$ZIP_NAME" -not -path './.git/*' -print -quit)"
+            ZIP_PATH="$(find . -type f -name "$ZIP_NAME" -not -path './.git/*' -not -path './.zip-tmp/*' -print -quit)"
           fi
           if [ -z "${ZIP_PATH:-}" ] || [ ! -f "$ZIP_PATH" ]; then
             echo "::error::ZIP not found: $ZIP_INPUT"
+            echo "ZIP files found:"
             find . -type f -iname '*.zip' -not -path './.git/*' -print
             exit 1
           fi
@@ -40,49 +41,67 @@ jobs:
           echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
           unzip -t "$ZIP_PATH"
 
-      - name: Extract and remove wrapper folder
+      - name: Extract and flatten into repository root
         shell: bash
         env:
           ZIP_PATH: ${{ steps.zip.outputs.zip_path }}
         run: |
           set -euo pipefail
-          rm -rf extracted .zip-tmp
-          mkdir -p extracted .zip-tmp
-          unzip -q "$ZIP_PATH" -d .zip-tmp
-          entries="$(find .zip-tmp -mindepth 1 -maxdepth 1 -print)"
-          count="$(printf '%s\n' "$entries" | sed '/^$/d' | wc -l | tr -d ' ')"
-          if [ "$count" = "1" ] && [ -d "$entries" ]; then
-            echo "ZIP has one wrapper folder; flattening its contents."
-            cp -R "$entries"/. extracted/
-          else
-            cp -R .zip-tmp/. extracted/
-          fi
-          rm -rf .zip-tmp
-          echo "Extracted files:"
-          find extracted -type f | sort | head -300
-          test -n "$(find extracted -type f -print -quit)" || {
+          TMP_DIR="$RUNNER_TEMP/ipa-zip-unpack"
+          CONTENT_DIR="$RUNNER_TEMP/ipa-zip-content"
+          rm -rf "$TMP_DIR" "$CONTENT_DIR" extracted
+          mkdir -p "$TMP_DIR" "$CONTENT_DIR"
+          unzip -q "$ZIP_PATH" -d "$TMP_DIR"
+
+          # Remove a single wrapper directory, e.g. "fiddler wramboer".
+          while true; do
+            entries="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -print)"
+            count="$(printf '%s\n' "$entries" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [ "$count" = "1" ] && [ -d "$entries" ]; then
+              inner="$entries"
+              # Stop flattening if this folder itself contains the project or source files.
+              cp -R "$inner"/. "$CONTENT_DIR"/
+              break
+            else
+              cp -R "$TMP_DIR"/. "$CONTENT_DIR"/
+              break
+            fi
+          done
+
+          test -n "$(find "$CONTENT_DIR" -type f -print -quit)" || {
             echo "::error::The ZIP did not contain any files"
             exit 1
           }
 
-      - name: Commit extracted files to repository
+          echo "Copying extracted files directly into repository root..."
+          # Keep Git metadata, workflow definitions, and the original ZIP intact.
+          rsync -a "$CONTENT_DIR"/ ./ \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='LyricbotVisualizer_iOS 2.zip' \
+            --exclude='extracted/'
+          echo "Files now present at repository root:"
+          find . -maxdepth 2 -type f -not -path './.git/*' | sort | head -300
+
+      - name: Commit root files and remove old extracted folder
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf extracted
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f extracted/
+          git add -A
           if git diff --cached --quiet; then
-            echo "No extracted-file changes to commit."
+            echo "No file changes to commit."
           else
-            git commit -m "Extract ZIP contents without wrapper folder"
+            git commit -m "Extract ZIP contents into repository root"
             git push
           fi
 
-      - name: Upload extracted files as artifact
+      - name: Upload flattened source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: extracted-source
-          path: extracted/
+          name: extracted-source-root
+          path: ${{ runner.temp }}/ipa-zip-content/
           if-no-files-found: error
           retention-days: 7
