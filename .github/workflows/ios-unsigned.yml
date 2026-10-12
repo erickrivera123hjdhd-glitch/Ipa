@@ -14,36 +14,36 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Find and extract source ZIP
+        id: zip
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_PATH="LyricbotVisualizer_iOS 2.zip"
-          test -f "$ZIP_PATH" || {
-            echo "::error::Missing $ZIP_PATH. Upload the source ZIP to the repository root, then rerun this workflow."
+          ZIP_NAME="LyricbotVisualizer_iOS 2.zip"
+          ZIP_PATH="$(find . -type f -name "$ZIP_NAME" -not -path './.git/*' -print -quit)"
+          if [ -z "$ZIP_PATH" ]; then
+            echo "::error::Could not find $ZIP_NAME anywhere in the repository. ZIP files found:"
+            find . -type f -iname '*.zip' -not -path './.git/*' -print
             exit 1
-          }
+          fi
+          echo "Using ZIP: $ZIP_PATH"
           mkdir -p source
           ditto -x -k "$ZIP_PATH" source
           echo "Extracted files:"
-          find source -maxdepth 5 -type f | sort | head -200
+          find source -maxdepth 7 -type f | sort | head -300
 
       - name: Locate XcodeGen project definition
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f project.yml ]; then
-            candidate="$(find source -name project.yml -type f -print -quit)"
-            if [ -n "$candidate" ]; then
-              cp "$candidate" project.yml
-              project_dir="$(dirname "$candidate")"
-              if [ "$project_dir" != "source" ]; then
-                cp -R "$project_dir"/. ./
-              fi
-            fi
-          fi
-          if [ ! -f project.yml ]; then
-            echo "::error::No project.yml found in the repository or ZIP. This workflow requires an XcodeGen project.yml."
+          candidate="$(find source -name project.yml -type f -print -quit)"
+          if [ -z "$candidate" ]; then
+            echo "::error::No project.yml found in the ZIP. This workflow requires an XcodeGen project.yml."
             exit 1
+          fi
+          project_dir="$(dirname "$candidate")"
+          cp "$candidate" project.yml
+          if [ "$project_dir" != "source" ]; then
+            cp -R "$project_dir"/. ./ 
           fi
 
       - name: Install XcodeGen
@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           PROJECT="$(find . -maxdepth 2 -name '*.xcodeproj' -type d -print -quit)"
           test -n "$PROJECT" || { echo "::error::XcodeGen did not create an .xcodeproj"; exit 1; }
-          SCHEME="$(/usr/libexec/PlistBuddy -c 'Print :scheme' project.yml 2>/dev/null || true)"
+          SCHEME="$(xcodegen list 2>/dev/null | head -1 | xargs || true)"
           SCHEME="${SCHEME:-LyricbotVisualizer}"
           xcodebuild \
             -project "$PROJECT" \
