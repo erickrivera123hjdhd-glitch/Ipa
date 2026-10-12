@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: "ZIP path or filename; if not found, searches folders"
+        description: "ZIP path or filename; searches folders if needed"
         required: true
         default: "LyricbotVisualizer_iOS 2.zip"
 
@@ -33,7 +33,6 @@ jobs:
           fi
           if [ -z "${ZIP_PATH:-}" ] || [ ! -f "$ZIP_PATH" ]; then
             echo "::error::ZIP not found: $ZIP_INPUT"
-            echo "ZIP files currently in repository:"
             find . -type f -iname '*.zip' -not -path './.git/*' -print
             exit 1
           fi
@@ -41,15 +40,24 @@ jobs:
           echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
           unzip -t "$ZIP_PATH"
 
-      - name: Extract ZIP into repository
+      - name: Extract and remove wrapper folder
         shell: bash
         env:
           ZIP_PATH: ${{ steps.zip.outputs.zip_path }}
         run: |
           set -euo pipefail
-          rm -rf extracted
-          mkdir -p extracted
-          unzip -q "$ZIP_PATH" -d extracted
+          rm -rf extracted .zip-tmp
+          mkdir -p extracted .zip-tmp
+          unzip -q "$ZIP_PATH" -d .zip-tmp
+          entries="$(find .zip-tmp -mindepth 1 -maxdepth 1 -print)"
+          count="$(printf '%s\n' "$entries" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "$count" = "1" ] && [ -d "$entries" ]; then
+            echo "ZIP has one wrapper folder; flattening its contents."
+            cp -R "$entries"/. extracted/
+          else
+            cp -R .zip-tmp/. extracted/
+          fi
+          rm -rf .zip-tmp
           echo "Extracted files:"
           find extracted -type f | sort | head -300
           test -n "$(find extracted -type f -print -quit)" || {
@@ -67,7 +75,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No extracted-file changes to commit."
           else
-            git commit -m "Extract source ZIP into repository"
+            git commit -m "Extract ZIP contents without wrapper folder"
             git push
           fi
 
