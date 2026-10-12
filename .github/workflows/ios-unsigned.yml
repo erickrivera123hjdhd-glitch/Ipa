@@ -1,0 +1,90 @@
+name: Build Unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_PATH="LyricbotVisualizer_iOS.zip"
+          test -f "$ZIP_PATH" || {
+            echo "::error::Missing $ZIP_PATH. Upload the source ZIP to the repository root, then rerun this workflow."
+            exit 1
+          }
+          mkdir -p source
+          ditto -x -k "$ZIP_PATH" source
+          echo "Extracted files:"
+          find source -maxdepth 5 -type f | sort | head -200
+
+      - name: Locate XcodeGen project definition
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f project.yml ]; then
+            candidate="$(find source -name project.yml -type f -print -quit)"
+            if [ -n "$candidate" ]; then
+              cp "$candidate" project.yml
+              project_dir="$(dirname "$candidate")"
+              if [ "$project_dir" != "source" ]; then
+                cp -R "$project_dir"/. ./
+              fi
+            fi
+          fi
+          if [ ! -f project.yml ]; then
+            echo "::error::No project.yml found in the repository or ZIP. This workflow requires an XcodeGen project.yml."
+            exit 1
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$(find . -maxdepth 2 -name '*.xcodeproj' -type d -print -quit)"
+          test -n "$PROJECT" || { echo "::error::XcodeGen did not create an .xcodeproj"; exit 1; }
+          SCHEME="$(/usr/libexec/PlistBuddy -c 'Print :scheme' project.yml 2>/dev/null || true)"
+          SCHEME="${SCHEME:-LyricbotVisualizer}"
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)"
+          test -n "$APP_PATH" || { echo "::error::Build completed but no .app bundle was found"; exit 1; }
+          mkdir -p package/Payload
+          cp -R "$APP_PATH" package/Payload/
+          (cd package && zip -qr ../LyricbotVisualizer_unsigned.ipa Payload)
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyricbotVisualizer-unsigned-ipa
+          path: LyricbotVisualizer_unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
