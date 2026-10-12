@@ -13,20 +13,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Extract ZIP into a folder
+      - name: Extract files directly into repository root
         run: |
           test -f "LyricbotVisualizer_iOS.zip"
-          mkdir -p "LyricbotVisualizer_iOS_extracted"
-          unzip -oq "LyricbotVisualizer_iOS.zip" -d "LyricbotVisualizer_iOS_extracted"
-
+          unzip -oj "LyricbotVisualizer_iOS.zip" -d .
+      
       - name: Commit extracted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "LyricbotVisualizer_iOS_extracted"
+          git add -A
           if git diff --cached --quiet; then
             echo "No extracted-file changes to commit."
           else
-            git commit -m "Extract uploaded iOS ZIP"
+            git commit -m "Extract iOS ZIP files into repository root"
             git push
           fi
