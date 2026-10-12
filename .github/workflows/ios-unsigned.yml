@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_PATH="LyricbotVisualizer_iOS.zip"
+          ZIP_PATH="LyricbotVisualizer_iOS 2.zip"
           test -f "$ZIP_PATH" || {
             echo "::error::Missing $ZIP_PATH. Upload the source ZIP to the repository root, then rerun this workflow."
             exit 1
