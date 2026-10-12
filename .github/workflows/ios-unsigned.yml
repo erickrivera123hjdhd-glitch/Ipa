@@ -1,0 +1,92 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare iOS project sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find . -maxdepth 4 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit | grep -q .; then
+            echo "Xcode project already exists in the repository."
+          elif [[ -f "LyricbotVisualizer_iOS.zip" ]]; then
+            mkdir -p source
+            unzip -oq "LyricbotVisualizer_iOS.zip" -d source
+          else
+            echo "No Xcode project/workspace or LyricbotVisualizer_iOS.zip was found."
+            exit 1
+          fi
+
+      - name: Select Xcode project and scheme
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ROOT="."
+          if ! find "$PROJECT_ROOT" -maxdepth 6 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit | grep -q .; then
+            PROJECT_ROOT="source"
+          fi
+          echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+
+          WORKSPACE="$(find "$PROJECT_ROOT" -maxdepth 6 -name '*.xcworkspace' -print -quit)"
+          PROJECT="$(find "$PROJECT_ROOT" -maxdepth 6 -name '*.xcodeproj' -print -quit)"
+          if [[ -n "$WORKSPACE" ]]; then
+            echo "container=-workspace" >> "$GITHUB_OUTPUT"
+            echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
+            LIST="$(xcodebuild -list -json -workspace "$WORKSPACE")"
+          elif [[ -n "$PROJECT" ]]; then
+            echo "container=-project" >> "$GITHUB_OUTPUT"
+            echo "path=$PROJECT" >> "$GITHUB_OUTPUT"
+            LIST="$(xcodebuild -list -json -project "$PROJECT")"
+          else
+            echo "Could not find an .xcodeproj or .xcworkspace."
+            exit 1
+          fi
+          SCHEME="$(printf '%s' "$LIST" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); x=d.get("workspace",d.get("project",{})); s=x.get("schemes",[]); print(s[0] if s else "")')"
+          if [[ -z "$SCHEME" ]]; then
+            echo "No shared Xcode scheme was found. Make a scheme shared in Xcode and commit it."
+            exit 1
+          fi
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+
+      - name: Build without code signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            "${{ steps.project.outputs.container }}" "${{ steps.project.outputs.path }}" \
+            -scheme "${{ steps.project.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then
+            echo "Build succeeded but no .app bundle was found."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && /usr/bin/zip -qry "$GITHUB_WORKSPACE/LyricbotVisualizer_unsigned.ipa" Payload)
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyricbotVisualizer-unsigned-ipa
+          path: LyricbotVisualizer_unsigned.ipa
+          if-no-files-found: error
