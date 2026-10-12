@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: "ZIP file path in the repository"
+        description: "ZIP path or filename; if not found, searches folders"
         required: true
         default: "LyricbotVisualizer_iOS 2.zip"
 
@@ -18,26 +18,38 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Verify ZIP exists
+      - name: Find and verify ZIP
+        id: zip
         shell: bash
+        env:
+          ZIP_INPUT: ${{ inputs.zip_path }}
         run: |
           set -euo pipefail
-          ZIP_PATH="${{ inputs.zip_path }}"
-          if [ ! -f "$ZIP_PATH" ]; then
-            echo "::error::ZIP not found: $ZIP_PATH"
-            echo "Files in repository root:"
-            ls -la
+          if [ -f "$ZIP_INPUT" ]; then
+            ZIP_PATH="$ZIP_INPUT"
+          else
+            ZIP_NAME="$(basename "$ZIP_INPUT")"
+            ZIP_PATH="$(find . -type f -name "$ZIP_NAME" -not -path './.git/*' -print -quit)"
+          fi
+          if [ -z "${ZIP_PATH:-}" ] || [ ! -f "$ZIP_PATH" ]; then
+            echo "::error::ZIP not found: $ZIP_INPUT"
+            echo "ZIP files currently in repository:"
+            find . -type f -iname '*.zip' -not -path './.git/*' -print
             exit 1
           fi
+          echo "Using ZIP: $ZIP_PATH"
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
           unzip -t "$ZIP_PATH"
 
       - name: Extract ZIP into repository
         shell: bash
+        env:
+          ZIP_PATH: ${{ steps.zip.outputs.zip_path }}
         run: |
           set -euo pipefail
           rm -rf extracted
           mkdir -p extracted
-          unzip -q "${{ inputs.zip_path }}" -d extracted
+          unzip -q "$ZIP_PATH" -d extracted
           echo "Extracted files:"
           find extracted -type f | sort | head -300
           test -n "$(find extracted -type f -print -quit)" || {
