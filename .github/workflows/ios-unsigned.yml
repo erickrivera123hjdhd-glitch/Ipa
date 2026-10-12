@@ -13,71 +13,79 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Prepare iOS project sources
+      - name: Prepare project sources
         shell: bash
         run: |
           set -euo pipefail
-          if find . -maxdepth 4 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit | grep -q .; then
-            echo "Xcode project already exists in the repository."
-          elif [[ -f "LyricbotVisualizer_iOS.zip" ]]; then
-            mkdir -p source
-            unzip -oq "LyricbotVisualizer_iOS.zip" -d source
-          else
-            echo "No Xcode project/workspace or LyricbotVisualizer_iOS.zip was found."
+
+          # This repository uses XcodeGen (project.yml), not a checked-in .xcodeproj.
+          if [[ ! -f project.yml ]]; then
+            if [[ -f LyricbotVisualizer_iOS.zip ]]; then
+              mkdir -p source
+              unzip -oq LyricbotVisualizer_iOS.zip -d source
+              if [[ -f source/project.yml ]]; then
+                cp source/project.yml ./project.yml
+              fi
+            fi
+          fi
+
+          if [[ ! -f project.yml ]]; then
+            echo "No project.yml found. This project needs an XcodeGen project.yml or an existing .xcodeproj/.xcworkspace."
+            find . -maxdepth 5 \( -name '*.xcodeproj' -o -name '*.xcworkspace' -o -name project.yml \) -print
             exit 1
           fi
 
-      - name: Select Xcode project and scheme
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
-          PROJECT_ROOT="."
-          if ! find "$PROJECT_ROOT" -maxdepth 6 \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) -print -quit | grep -q .; then
-            PROJECT_ROOT="source"
+          # Recover the original folders from the ZIP when present. Some repository uploads
+          # flatten the Swift files into the root, so recreate Sources in that case.
+          if [[ ! -d Sources && -d source/Sources ]]; then
+            cp -R source/Sources Sources
           fi
-          echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+          if [[ ! -d Resources && -d source/Resources ]]; then
+            cp -R source/Resources Resources
+          fi
+          if [[ ! -d Sources ]]; then
+            mkdir -p Sources
+            find . -maxdepth 1 -type f -name '*.swift' -exec cp {} Sources/ \;
+          fi
+          if [[ ! -d Resources ]]; then
+            mkdir -p Resources
+            for f in ./*.png ./*.jpg ./*.jpeg ./*.json; do
+              [[ -f "$f" ]] && cp "$f" Resources/
+            done
+          fi
 
-          WORKSPACE="$(find "$PROJECT_ROOT" -maxdepth 6 -name '*.xcworkspace' -print -quit)"
-          PROJECT="$(find "$PROJECT_ROOT" -maxdepth 6 -name '*.xcodeproj' -print -quit)"
-          if [[ -n "$WORKSPACE" ]]; then
-            echo "container=-workspace" >> "$GITHUB_OUTPUT"
-            echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
-            LIST="$(xcodebuild -list -json -workspace "$WORKSPACE")"
-          elif [[ -n "$PROJECT" ]]; then
-            echo "container=-project" >> "$GITHUB_OUTPUT"
-            echo "path=$PROJECT" >> "$GITHUB_OUTPUT"
-            LIST="$(xcodebuild -list -json -project "$PROJECT")"
-          else
-            echo "Could not find an .xcodeproj or .xcworkspace."
-            exit 1
-          fi
-          SCHEME="$(printf '%s' "$LIST" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); x=d.get("workspace",d.get("project",{})); s=x.get("schemes",[]); print(s[0] if s else "")')"
-          if [[ -z "$SCHEME" ]]; then
-            echo "No shared Xcode scheme was found. Make a scheme shared in Xcode and commit it."
-            exit 1
-          fi
-          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Swift sources:"
+          find Sources -maxdepth 3 -type f -print
+          echo "Resources:"
+          find Resources -maxdepth 3 -type f -print
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Build without code signing
-        shell: bash
         run: |
           set -euo pipefail
-          xcodebuild build \
-            "${{ steps.project.outputs.container }}" "${{ steps.project.outputs.path }}" \
-            -scheme "${{ steps.project.outputs.scheme }}" \
+          xcodebuild \
+            -project LyricbotVisualizer.xcodeproj \
+            -scheme LyricbotVisualizer \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
 
       - name: Package unsigned IPA
-        shell: bash
         run: |
           set -euo pipefail
           APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
           if [[ -z "$APP_PATH" ]]; then
-            echo "Build succeeded but no .app bundle was found."
+            echo "Build completed but no .app bundle was found."
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
